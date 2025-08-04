@@ -26,26 +26,27 @@ def _find_row(df: pd.DataFrame, col0_value: str) -> int:
     if idx is None or not mask.any():
         raise ValueError(f"Row with value “{col0_value}” not found.")
     return int(idx)
+def strip_affil_name(name: str | None) -> str | None:
+    """Remove trailing '(CODE)' from an affiliation name."""
+    if not name or pd.isna(name):
+        return None
+    return re.sub(r"\s*\([^)]+\)\s*$", "", str(name)).strip()
 
 
 def load_affiliation_lookup(df_raw: pd.DataFrame) -> pd.DataFrame:
-    """
-    Extract the “Affiliations / Tax ID Number” block at the top of the sheet
-    and return a lookup table with columns:  code, name, tax_id.
-    """
     start = _find_row(df_raw, "Affiliations") + 1
     rows = []
     for i in range(start, len(df_raw)):
         name, tax_id = df_raw.iloc[i, 0], df_raw.iloc[i, 1]
         if pd.isna(name) or pd.isna(tax_id):
-            break                                # reached blank line / next section
+            break
         name = str(name).strip()
         tax_id = str(tax_id).strip()
-        # pull the 3-4 letter abbreviation inside parentheses
         m = re.search(r"\(([^)]+)\)\s*$", name)
         code = m.group(1) if m else None
-        rows.append((code, name, tax_id))
+        rows.append((code, strip_affil_name(name), tax_id))  # ← store cleaned name
     return pd.DataFrame(rows, columns=["code", "name", "tax_id"])
+
 
 
 def load_provider_table(df_raw: pd.DataFrame) -> pd.DataFrame:
@@ -142,3 +143,4 @@ if __name__ == "__main__":
     SRC = Path(r"C:\Users\Nitesh\Downloads\Emory_Healthcare_Providers.xlsx")
     DST = Path(r"C:\Users\Nitesh\Downloads\Emory_Healthcare_output01.xlsx")
     convert(SRC, DST)
+
