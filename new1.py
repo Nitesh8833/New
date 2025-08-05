@@ -1,16 +1,20 @@
-# df_to_gcs_pipeline_nb.py  (use in Dataproc Jupyter)
+# pipeline_df_to_gcs_two_arg.py
+
 from __future__ import annotations
 
 import io
 import logging
 import re
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 from google.cloud import storage
 
-# ──────────────────────────────────────────────────────────────────────
-# EDIT ONLY IF YOU NEED DIFFERENT OUTPUT HEADERS
+
+# ============ CONFIG ============
+
+LOG_LEVEL = "INFO"  # DEBUG, INFO, WARNING, ERROR
+
 # SOURCE header -> OUTPUT column name
 MAPPING: Dict[str, str] = {
     "business_owner": "Business Team",
@@ -24,36 +28,19 @@ MAPPING: Dict[str, str] = {
     "error_details": "Error Description",
 }
 
-LOG_LEVEL = "INFO"  # DEBUG, INFO, WARNING, ERROR
-# ──────────────────────────────────────────────────────────────────────
 
-
-# ============================== Helpers ===============================
+# ============ HELPERS ============
 
 def _normalize(s: str) -> str:
-    """Normalize a header for robust matching: lower, strip, remove spaces/_/-/dots."""
+    """Lower/trim and remove spaces/_/.- for robust header matching."""
     return re.sub(r"[ \t\-\_\.]+", "", str(s).strip().lower())
 
 
-def _parse_gs_uri(gs_uri: str) -> Tuple[str, str]:
-    """Split gs://bucket/path/file.ext -> (bucket, object_path)."""
-    if not gs_uri.startswith("gs://"):
-        raise ValueError("gs_uri must start with 'gs://'")
-    no_scheme = gs_uri[len("gs://") :]
-    bucket, _, obj = no_scheme.partition("/")
-    if not bucket or not obj:
-        raise ValueError("gs_uri must be like gs://<bucket>/<path>/<file>")
-    return bucket, obj
-
-
-def build_renamer(df: pd.DataFrame, mapping_src_to_out: Dict[str, str]) -> Dict[str, str]:
-    """
-    Build a renamer dict {source_col_in_df: output_col_name} using robust matching.
-    mapping is SOURCE -> OUTPUT.
-    """
+def _build_renamer(df: pd.DataFrame, mapping_src_to_out: Dict[str, str]) -> Dict[str, str]:
+    """Return {real_source_col_in_df: desired_output_col}."""
     norm_to_real = {_normalize(c): c for c in df.columns}
     renamer: Dict[str, str] = {}
-    matched, missing = 0, 0
+    matched = missing = 0
 
     for src_label, out_col in mapping_src_to_out.items():
         key = _normalize(src_label)
@@ -62,7 +49,7 @@ def build_renamer(df: pd.DataFrame, mapping_src_to_out: Dict[str, str]) -> Dict[
             matched += 1
         else:
             missing += 1
-            logging.warning("Source column '%s' not found; will create empty '%s'.", src_label, out_col)
+            logging.warning("Source column '%s' not found; creating empty '%s'.", src_label, out_col)
 
     logging.info("[MAP] matched=%d missing=%d", matched, missing)
     return renamer
@@ -70,23 +57,23 @@ def build_renamer(df: pd.DataFrame, mapping_src_to_out: Dict[str, str]) -> Dict[
 
 def extract_and_rename(df: pd.DataFrame, mapping_src_to_out: Dict[str, str]) -> pd.DataFrame:
     """
-    Select & rename per mapping, create missing outputs as empty,
-    reorder to output order, and lightly clean strings.
+    Two-arg version:
+    - Select & rename by mapping
+    - Create any missing output columns as empty
+    - Reorder to mapping's output order
+    - Light string cleanup
     """
     output_order: List[str] = list(mapping_src_to_out.values())
-    renamer = build_renamer(df, mapping_src_to_out)
+    renamer = _build_renamer(df, mapping_src_to_out)
 
     selected = df[list(renamer.keys())].rename(columns=renamer) if renamer else pd.DataFrame()
 
-    # ensure all desired outputs exist
     for out_col in output_order:
         if out_col not in selected.columns:
             selected[out_col] = pd.NA
 
-    # reorder
     selected = selected[output_order]
 
-    # light cleanup
     for c in selected.columns:
         if pd.api.types.is_string_dtype(selected[c]):
             selected[c] = selected[c].astype("string").str.strip()
@@ -94,17 +81,50 @@ def extract_and_rename(df: pd.DataFrame, mapping_src_to_out: Dict[str, str]) -> 
     return selected
 
 
+def _parse_gs_uri(gs_uri: str) -> Tuple[str, str]:
+    if not gs_uri.startswith("gs://"):
+        raise ValueError("gs_uri must start with 'gs://'")
+    path = gs_uri[5:]
+    bucket, sep, object_name = path.partition("/")
+    if not bucket or not sep or not object_name:
+        raise ValueError("Invalid gs_uri; expected 'gs://<bucket>/<object>'")
+    return bucket, object_name
+
+
+def _next_available_name(client: storage.Client, bucket: str, object_name: str) -> str:
+    """If object exists, append _001/_002 before the extension."""
+    bkt = client.bucket(bucket)
+    if not bkt.blob(object_name).exists(client=client):
+        return object_name
+
+    if "/" in object_name:
+        dir_, file_ = object_name.rsplit("/", 1)
+        prefix = dir_ + "/"
+    else:
+        prefix, file_ = "", object_name
+
+    if "." in file_:
+        stem, ext = file_.rsplit(".", 1)
+        ext = "." + ext
+    else:
+        stem, ext = file_, ""
+
+    i = 1
+    while True:
+        candidate = f"{prefix}{stem}_{i:03d}{ext}"
+        if not bkt.blob(candidate).exists(client=client):
+            return candidate
+        i += 1
+
+
 def _autosize_and_freeze_openpyxl(writer: pd.ExcelWriter, df: pd.DataFrame, sheet_name: str) -> None:
-    """Auto-size columns & freeze header (openpyxl)."""
     ws = writer.sheets[sheet_name]
     from openpyxl.utils import get_column_letter
-
     for idx, col in enumerate(df.columns, start=1):
-        series = df[col].astype("string")
-        max_cell = int(series.map(lambda x: len(str(x)) if pd.notna(x) else 0).max()) if len(series) else 0
+        s = df[col].astype("string")
+        max_cell = int(s.map(lambda x: len(str(x)) if pd.notna(x) else 0).max()) if len(s) else 0
         max_len = max(len(str(col)), max_cell)
         ws.column_dimensions[get_column_letter(idx)].width = min(max_len + 2, 60)
-
     ws.freeze_panes = "A2"
 
 
@@ -116,20 +136,25 @@ def write_df_to_gcs(
     object_name: Optional[str] = None,
     fmt: str = "xlsx",
     sheet_name: str = "Sheet1",
+    auto_increment: bool = False,
 ) -> str:
     """
-    Write DataFrame to GCS as CSV or XLSX (autosized & frozen header).
-    - Prefer passing gs_uri="gs://bucket/path/file.xlsx".
-    - Returns the gs:// URI written.
-    Requires ADC on Dataproc (cluster service account has Storage write).
+    Upload DataFrame to GCS as CSV/XLSX. Returns the written gs:// URI.
+    Supports either gs_uri OR (bucket + object_name).
     """
-    if gs_uri:
-        bucket, object_name = _parse_gs_uri(gs_uri)
-    if not bucket or not object_name:
-        raise ValueError("Provide gs_uri OR both bucket and object_name.")
-
     client = storage.Client()
-    blob = client.bucket(bucket).blob(object_name)
+
+    if gs_uri:
+        bucket_name, obj_name = _parse_gs_uri(gs_uri)
+    else:
+        if not bucket or not object_name:
+            raise ValueError("Provide either gs_uri OR (bucket AND object_name).")
+        bucket_name, obj_name = bucket, object_name
+
+    if auto_increment:
+        obj_name = _next_available_name(client, bucket_name, obj_name)
+
+    blob = client.bucket(bucket_name).blob(obj_name)
     fmt = fmt.lower()
 
     if fmt == "csv":
@@ -146,12 +171,14 @@ def write_df_to_gcs(
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
     else:
-        raise ValueError("Unsupported fmt (use 'csv' or 'xlsx').")
+        raise ValueError("fmt must be 'csv' or 'xlsx'")
 
-    out_uri = f"gs://{bucket}/{object_name}"
+    out_uri = f"gs://{bucket_name}/{obj_name}"
     logging.info("[OUT] %s -> %s", fmt.upper(), out_uri)
     return out_uri
 
+
+# ============ RUNNER (returns df + URI) ============
 
 def run_pipeline_from_df(
     source_df: pd.DataFrame,
@@ -161,23 +188,31 @@ def run_pipeline_from_df(
     object_name: Optional[str] = None,
     fmt: str = "xlsx",
     sheet_name: str = "Sheet1",
-) -> pd.DataFrame:
+    auto_increment: bool = False,
+) -> Tuple[pd.DataFrame, str]:
     """
-    Full pipeline for Dataproc Jupyter:
-    - Takes your in-memory DataFrame (e.g., `result` from your SQL cell)
-    - Applies the mapping
-    - Writes to GCS (using gs_uri or bucket/object)
-    - Returns the transformed DataFrame
+    - Uses your in-memory DataFrame (e.g., `result`)
+    - Applies mapping (two-arg extract_and_rename)
+    - Writes to GCS (gs_uri OR bucket/object)
+    - Returns (df_out, written_gs_uri)
     """
     logging.basicConfig(
         level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
         format="%(levelname)s: %(message)s",
-        force=True,   # ensure notebook logging resets cleanly
+        force=True,
     )
+    logging.info("[SRC] Using in-memory DataFrame. Rows=%d Cols=%d",
+                 len(source_df), len(source_df.columns))
 
-    logging.info("[SRC] Using in-memory DataFrame. Rows=%d Cols=%d", len(source_df), len(source_df.columns))
     df_out = extract_and_rename(source_df, MAPPING)
 
-    # write
-    _ = write_df_to_gcs(df_out, gs_uri=gs_uri, bucket=bucket, object_name=object_name, fmt=fmt, sheet_name=sheet_name)
-    return df_out
+    written_uri = write_df_to_gcs(
+        df_out,
+        gs_uri=gs_uri,
+        bucket=bucket,
+        object_name=object_name,
+        fmt=fmt,
+        sheet_name=sheet_name,
+        auto_increment=auto_increment,
+    )
+    return df_out, written_uri
