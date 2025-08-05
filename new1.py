@@ -44,3 +44,36 @@ conn = connector.connect(
     password=password,
     db=dbname,
 )
+
+
+**********************************************************
+%pip install -q cloud-sql-python-connector pg8000
+
+from google.cloud.sql.connector import Connector, IPTypes
+import contextlib
+
+PROJECT = "your-project"
+REGION  = "us-east4"
+INST    = "your-instance"
+DB      = "your_db"
+USER    = "your_user"
+PWD     = "your_password"
+
+@contextlib.contextmanager
+def get_conn():
+    connector = Connector()
+    try:
+        conn = connector.connect(
+            f"{PROJECT}:{REGION}:{INST}",
+            "pg8000",
+            user=USER, password=PWD, db=DB,
+            ip_type=IPTypes.PRIVATE  # or IPTypes.PUBLIC
+        )
+        yield conn
+    finally:
+        connector.close()
+
+with get_conn() as conn:
+    with conn.cursor() as cur:
+        cur.execute("select version();")
+        print(cur.fetchone())
