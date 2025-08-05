@@ -1,15 +1,16 @@
-# df_to_gcs_pipeline.py
+# df_to_gcs_pipeline_nb.py  (use in Dataproc Jupyter)
 from __future__ import annotations
 
 import io
 import logging
 import re
-from typing import Dict, List
+from typing import Dict, List, Tuple, Optional
 
 import pandas as pd
 from google.cloud import storage
 
-# -------------------- EDIT MAPPING ONLY (if needed) --------------------
+# ──────────────────────────────────────────────────────────────────────
+# EDIT ONLY IF YOU NEED DIFFERENT OUTPUT HEADERS
 # SOURCE header -> OUTPUT column name
 MAPPING: Dict[str, str] = {
     "business_owner": "Business Team",
@@ -24,6 +25,7 @@ MAPPING: Dict[str, str] = {
 }
 
 LOG_LEVEL = "INFO"  # DEBUG, INFO, WARNING, ERROR
+# ──────────────────────────────────────────────────────────────────────
 
 
 # ============================== Helpers ===============================
@@ -31,6 +33,17 @@ LOG_LEVEL = "INFO"  # DEBUG, INFO, WARNING, ERROR
 def _normalize(s: str) -> str:
     """Normalize a header for robust matching: lower, strip, remove spaces/_/-/dots."""
     return re.sub(r"[ \t\-\_\.]+", "", str(s).strip().lower())
+
+
+def _parse_gs_uri(gs_uri: str) -> Tuple[str, str]:
+    """Split gs://bucket/path/file.ext -> (bucket, object_path)."""
+    if not gs_uri.startswith("gs://"):
+        raise ValueError("gs_uri must start with 'gs://'")
+    no_scheme = gs_uri[len("gs://") :]
+    bucket, _, obj = no_scheme.partition("/")
+    if not bucket or not obj:
+        raise ValueError("gs_uri must be like gs://<bucket>/<path>/<file>")
+    return bucket, obj
 
 
 def build_renamer(df: pd.DataFrame, mapping_src_to_out: Dict[str, str]) -> Dict[str, str]:
@@ -95,11 +108,26 @@ def _autosize_and_freeze_openpyxl(writer: pd.ExcelWriter, df: pd.DataFrame, shee
     ws.freeze_panes = "A2"
 
 
-def write_df_to_gcs(df: pd.DataFrame, bucket: str, object_name: str, fmt: str = "xlsx", sheet_name: str = "Sheet1") -> None:
+def write_df_to_gcs(
+    df: pd.DataFrame,
+    *,
+    gs_uri: Optional[str] = None,
+    bucket: Optional[str] = None,
+    object_name: Optional[str] = None,
+    fmt: str = "xlsx",
+    sheet_name: str = "Sheet1",
+) -> str:
     """
-    Write DataFrame directly to GCS as CSV or XLSX (autosized & frozen header).
-    Requires ADC or a service account on the machine.
+    Write DataFrame to GCS as CSV or XLSX (autosized & frozen header).
+    - Prefer passing gs_uri="gs://bucket/path/file.xlsx".
+    - Returns the gs:// URI written.
+    Requires ADC on Dataproc (cluster service account has Storage write).
     """
+    if gs_uri:
+        bucket, object_name = _parse_gs_uri(gs_uri)
+    if not bucket or not object_name:
+        raise ValueError("Provide gs_uri OR both bucket and object_name.")
+
     client = storage.Client()
     blob = client.bucket(bucket).blob(object_name)
     fmt = fmt.lower()
@@ -107,7 +135,6 @@ def write_df_to_gcs(df: pd.DataFrame, bucket: str, object_name: str, fmt: str = 
     if fmt == "csv":
         payload = df.to_csv(index=False)
         blob.upload_from_string(payload, content_type="text/csv")
-        logging.info("[OUT] CSV -> gs://%s/%s", bucket, object_name)
     elif fmt == "xlsx":
         bio = io.BytesIO()
         with pd.ExcelWriter(bio, engine="openpyxl") as writer:
@@ -118,20 +145,39 @@ def write_df_to_gcs(df: pd.DataFrame, bucket: str, object_name: str, fmt: str = 
             bio,
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-        logging.info("[OUT] XLSX -> gs://%s/%s", bucket, object_name)
     else:
         raise ValueError("Unsupported fmt (use 'csv' or 'xlsx').")
 
+    out_uri = f"gs://{bucket}/{object_name}"
+    logging.info("[OUT] %s -> %s", fmt.upper(), out_uri)
+    return out_uri
 
-def run_pipeline_from_df(source_df: pd.DataFrame, gcs_bucket: str, gcs_object: str, fmt: str = "xlsx", sheet_name: str = "Sheet1") -> pd.DataFrame:
-    """
-    Full pipeline: take existing DataFrame (e.g., `result`), transform, and write to GCS.
-    Returns transformed DataFrame.
-    """
-    logging.basicConfig(level=getattr(logging, LOG_LEVEL.upper(), logging.INFO), format="%(levelname)s: %(message)s")
-    logging.info("[SRC] Using in-memory DataFrame (no DB config). Rows=%d Cols=%d", len(source_df), len(source_df.columns))
 
+def run_pipeline_from_df(
+    source_df: pd.DataFrame,
+    *,
+    gs_uri: Optional[str] = None,
+    bucket: Optional[str] = None,
+    object_name: Optional[str] = None,
+    fmt: str = "xlsx",
+    sheet_name: str = "Sheet1",
+) -> pd.DataFrame:
+    """
+    Full pipeline for Dataproc Jupyter:
+    - Takes your in-memory DataFrame (e.g., `result` from your SQL cell)
+    - Applies the mapping
+    - Writes to GCS (using gs_uri or bucket/object)
+    - Returns the transformed DataFrame
+    """
+    logging.basicConfig(
+        level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
+        format="%(levelname)s: %(message)s",
+        force=True,   # ensure notebook logging resets cleanly
+    )
+
+    logging.info("[SRC] Using in-memory DataFrame. Rows=%d Cols=%d", len(source_df), len(source_df.columns))
     df_out = extract_and_rename(source_df, MAPPING)
 
-    write_df_to_gcs(df_out, bucket=gcs_bucket, object_name=gcs_object, fmt=fmt, sheet_name=sheet_name)
+    # write
+    _ = write_df_to_gcs(df_out, gs_uri=gs_uri, bucket=bucket, object_name=object_name, fmt=fmt, sheet_name=sheet_name)
     return df_out
