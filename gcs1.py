@@ -29,3 +29,30 @@ def add_all_rosters(df: pd.DataFrame, new_col_name: str = "All Rosters") -> pd.D
     counts = out.groupby(out[rid]).transform("size")
     out[new_col_name] = counts.fillna(0).astype(int)
     return out
+
+
+
+def add_all_rosters(df: pd.DataFrame, new_col_name: str = "All Rosters") -> pd.DataFrame:
+    """
+    Adds a KPI column '# All Rosters' counting rows per roster_id.
+    Handles cases where roster_id is missing or invalid.
+    """
+    out = df.copy()
+    rid = _find_col(out, ["roster_id", "Roster ID", "roster id", "rosterid"])
+    
+    if not rid or rid not in out.columns:
+        print("[WARN] No roster_id column found. Setting 'All Rosters' to 1.")
+        out[new_col_name] = 1
+        return out
+    
+    # Ensure column is string (for groupby compatibility)
+    out[rid] = out[rid].astype(str)
+
+    try:
+        counts = out.groupby(rid)[rid].transform("size")
+        out[new_col_name] = counts.fillna(0).astype(int)
+    except Exception as e:
+        print(f"[ERROR] add_all_rosters failed: {e}")
+        out[new_col_name] = 1
+    
+    return out
