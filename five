@@ -1,0 +1,77 @@
+
+def add_new_roster_formats(df: pd.DataFrame,
+                           include=("NEW_FILE", "NEW_VERSION", "ACTIVE")) -> pd.DataFrame:
+    out, owner = df.copy(), _business_owner_col(df)
+    if not owner:
+        out["# New Roster Formats"] = 0
+        return out
+
+    # same rules as before, just per-owner
+    vs = _version_status(out)
+    if vs is None:
+        out["# New Roster Formats"] = 0
+        return out
+    statuses = [s.replace(" ", "_") for s in include]
+    is_new = vs.isin(statuses)
+    counts = is_new.groupby(out[owner]).transform("sum")
+    out["# New Roster Formats"] = counts.astype(int)
+    return out
+
+
+def add_changed_roster_formats(df: pd.DataFrame) -> pd.DataFrame:
+    out, owner = df.copy(), _business_owner_col(df)
+    if not owner:
+        out["# Changed Roster Formats"] = 0
+        return out
+
+    vs = _version_status(out)
+    if vs is None:
+        out["# Changed Roster Formats"] = 0
+        return out
+
+    prev = vs.groupby(out[owner]).shift(1)
+    changed = vs.eq("NEW_VERSION") & prev.notna() & prev.ne("NEW_VERSION")
+    out["# Changed Roster Formats"] = changed.groupby(out[owner]).transform("sum").astype(int)
+    return out
+
+
+def add_no_setup_or_format_change(
+    df: pd.DataFrame,
+    colname="# of Rosters with no Set up or Format Change",
+) -> pd.DataFrame:
+    out, owner = df.copy(), _business_owner_col(df)
+    if not owner:
+        out[colname] = 0
+        return out
+
+    uniq = out[owner].groupby(out[owner]).transform(lambda s: s.nunique(dropna=True))
+    out[colname] = (uniq <= 1).astype(int)
+    return out
+
+
+def add_complex_rosters(df: pd.DataFrame) -> pd.DataFrame:
+    out, owner = df.copy(), _business_owner_col(df)
+    if not owner:
+        out["# Complex Rosters"] = 0
+        return out
+
+    cx_col = find_col(out, ["complexity", "Complexity", "complex"])
+    if not cx_col:
+        out["# Complex Rosters"] = 0
+        return out
+
+    is_cx = out[cx_col].astype("string").str.upper().str.contains("COMPLEX", na=False)
+    out["# Complex Rosters"] = is_cx.groupby(out[owner]).transform("sum").astype(int)
+    return out
+
+
+def add_all_rosters(df: pd.DataFrame) -> pd.DataFrame:
+    """Row-count per business owner."""
+    out, owner = df.copy(), _business_owner_col(df)
+    if not owner:
+        out["All Rosters"] = 1
+        return out
+
+    vc = out[owner].value_counts(dropna=False)
+    out["All Rosters"] = out[owner].map(vc).astype(int)
+    return out
