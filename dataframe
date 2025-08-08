@@ -1,0 +1,68 @@
+import pandas as pd
+from datetime import datetime, timedelta
+from caas_jupyter_tools import display_dataframe_to_user
+
+
+
+data = {
+    # identity / grouping
+    "roster_id":                [1, 1, 1, 2, 2, 2, 3, 3, 4, 5],
+    "state":                    ["CA", "CA", "CA", "NY", "NY", "NY", "TX", "TX", "FL", "WA"],
+    "business_owner":           ["TeamA", "TeamA", "TeamA", "TeamB", "TeamB", "TeamB",
+                                 "TeamC", "TeamC", "TeamD", "TeamE"],
+    "group_type":               ["DLG", "DLG", "DLG", "NDLG", "NDLG", "NDLG",
+                                 "DLG", "DLG", "DLG", "NDLG"],
+    "roster_name":              ["Provider‑1", "Provider‑1", "Provider‑1",
+                                 "Provider‑2", "Provider‑2", "Provider‑2",
+                                 "Provider‑3", "Provider‑3",
+                                 "Provider‑4", "Provider‑5"],
+    "parent_transaction_type":  ["ALL", "ALL", "ALL", "ALL", "ALL", "ALL",
+                                 "ALL", "ALL", "ALL", "ALL"],
+    "transaction_type":         ["NEW", "NEW", "NEW", "CHANGE", "CHANGE", "CHANGE",
+                                 "NEW", "NEW", "PASS", "PASS"],
+    "case_number":              [43675854, 8768768, 9879799, 43675855, 43675856,
+                                 43675857, 9988776, 9988777, 1234567, 7654321],
+    "roster_date":              pd.to_datetime([
+                                 "2025-07-01","2025-07-01","2025-07-25",
+                                 "2025-07-01","2025-07-13","2025-07-20",
+                                 "2025-07-08","2025-07-08",
+                                 "2025-07-14","2025-07-21"]),
+    "roster_file_id":           [101,101,232031,102,103,104,105,105,106,107],
+
+    # status / complexity
+    "version_status":           ["NEW_FILE","NEW_FILE","NEW_VERSION",
+                                 "NEW_FILE","NEW_VERSION","NEW_VERSION",
+                                 "NEW_FILE","NEW_FILE",
+                                 "PASS_THROUGH","PASS_THROUGH"],
+    "complexity":               ["SIMPLE","SIMPLE","COMPLEX",
+                                 "SIMPLE","COMPLEX","COMPLEX",
+                                 "COMPLEX","SIMPLE","SIMPLE","SIMPLE"],
+
+    # timestamps (tz‑aware)
+    "prms_posted_timestamp":    pd.date_range("2025-07-01 11:00", periods=10, freq="H",
+                                 tz="UTC"),
+    "file_ingestion_timestamp": pd.date_range("2025-07-01 11:05", periods=10, freq="H",
+                                 tz="UTC"),
+
+    # counts
+    "input_rec_count":          [99]*10,
+    "conformed_rec_count":      [99]*10,
+    "input_unique_npi_count":   [95]*10,
+    "conformed_unique_npi_count":[95]*10,
+
+    # error codes / descriptions (mostly NA)
+    "critical_error_codes":     [None,None,None,"E001","E001",None,None,None,None,None],
+    "critical_error_description":[None,None,None,"Invalid NPI","Invalid NPI",None,None,None,None,None],
+    "non_critical_error_codes": [None]*10,
+    "non_critical_error_description":[None]*10,
+
+    # audit stamps
+    "insert_timestamp":         pd.date_range("2025-07-01 11:00", periods=10, freq="H",
+                                 tz="UTC"),
+    "update_timestamp":         pd.date_range("2025-07-01 15:00", periods=10, freq="H",
+                                 tz="UTC"),
+}
+
+df_sample = pd.DataFrame(data)
+
+display_dataframe_to_user("Synthetic‑Roster‑Sample", df_sample)
