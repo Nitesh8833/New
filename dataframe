@@ -66,3 +66,17 @@ data = {
 df_sample = pd.DataFrame(data)
 
 display_dataframe_to_user("Synthetic‑Roster‑Sample", df_sample)
+
+
+import pandas as pd
+
+# `result`  – your existing DataFrame
+# `df_sample` – the DataFrame you want to append
+
+combined = pd.concat([result, df_sample],   # order matters → result first
+                     ignore_index=True,      # re-index 0 … n-1
+                     sort=False)             # keep original column order
+
+# `combined` now has all rows from `result` followed by all rows from df_sample
+print(combined.shape)        # rows, cols
+
