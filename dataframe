@@ -1,82 +1,68 @@
-import pandas as pd
-from datetime import datetime, timedelta
-from caas_jupyter_tools import display_dataframe_to_user
+# ───────────────────────── constants (add / replace) ─────────────────────────
+BUSINESS_OWNER_COL = "Business Team"          # friendly name after header-rename
 
+SHEET2_COLS_WITH_OWNER = [
+    BUSINESS_OWNER_COL,
+    "# New Roster Formats",
+    "# Changed Roster Formats",
+    "# of Rosters with no Set up or Format Change",
+    "# Complex Rosters",
+    "All Rosters",
+]
 
+# ──────────── REPLACE the whole write_two_sheet_excel_gcs function ───────────
+def write_two_sheet_excel_gcs(df: pd.DataFrame, gcs_uri: str) -> None:
+    """
+    Sheet 1 = detail rows      (SHEET1_COLS)
+    Sheet 2 = one row per team (BUSINESS_OWNER_COL + KPI columns)
+    Upload to GCS.
+    """
+    try:
+        from google.cloud import storage
+    except ImportError:
+        raise ImportError("pip install google-cloud-storage") from None
 
-data = {
-    # identity / grouping
-    "roster_id":                [1, 1, 1, 2, 2, 2, 3, 3, 4, 5],
-    "state":                    ["CA", "CA", "CA", "NY", "NY", "NY", "TX", "TX", "FL", "WA"],
-    "business_owner":           ["TeamA", "TeamA", "TeamA", "TeamB", "TeamB", "TeamB",
-                                 "TeamC", "TeamC", "TeamD", "TeamE"],
-    "group_type":               ["DLG", "DLG", "DLG", "NDLG", "NDLG", "NDLG",
-                                 "DLG", "DLG", "DLG", "NDLG"],
-    "roster_name":              ["Provider‑1", "Provider‑1", "Provider‑1",
-                                 "Provider‑2", "Provider‑2", "Provider‑2",
-                                 "Provider‑3", "Provider‑3",
-                                 "Provider‑4", "Provider‑5"],
-    "parent_transaction_type":  ["ALL", "ALL", "ALL", "ALL", "ALL", "ALL",
-                                 "ALL", "ALL", "ALL", "ALL"],
-    "transaction_type":         ["NEW", "NEW", "NEW", "CHANGE", "CHANGE", "CHANGE",
-                                 "NEW", "NEW", "PASS", "PASS"],
-    "case_number":              [43675854, 8768768, 9879799, 43675855, 43675856,
-                                 43675857, 9988776, 9988777, 1234567, 7654321],
-    "roster_date":              pd.to_datetime([
-                                 "2025-07-01","2025-07-01","2025-07-25",
-                                 "2025-07-01","2025-07-13","2025-07-20",
-                                 "2025-07-08","2025-07-08",
-                                 "2025-07-14","2025-07-21"]),
-    "roster_file_id":           [101,101,232031,102,103,104,105,105,106,107],
+    # -------- Sheet 1  (detail, row-level) --------
+    df1 = df.reindex(columns=[c for c in SHEET1_COLS if c in df.columns])
 
-    # status / complexity
-    "version_status":           ["NEW_FILE","NEW_FILE","NEW_VERSION",
-                                 "NEW_FILE","NEW_VERSION","NEW_VERSION",
-                                 "NEW_FILE","NEW_FILE",
-                                 "PASS_THROUGH","PASS_THROUGH"],
-    "complexity":               ["SIMPLE","SIMPLE","COMPLEX",
-                                 "SIMPLE","COMPLEX","COMPLEX",
-                                 "COMPLEX","SIMPLE","SIMPLE","SIMPLE"],
+    # -------- Sheet 2  (aggregated by Business Team) --------
+    missing_owner = BUSINESS_OWNER_COL not in df.columns
+    if missing_owner:
+        raise ValueError(
+            f"Column '{BUSINESS_OWNER_COL}' not present after friendly-headers step."
+        )
 
-    # timestamps (tz‑aware)
-    "prms_posted_timestamp":    pd.date_range("2025-07-01 11:00", periods=10, freq="H",
-                                 tz="UTC"),
-    "file_ingestion_timestamp": pd.date_range("2025-07-01 11:05", periods=10, freq="H",
-                                 tz="UTC"),
+    kpi_cols = [c for c in SHEET2_COLS_WITH_OWNER if c != BUSINESS_OWNER_COL]
+    # group, take first() – values identical per team
+    df2 = (
+        df.groupby(BUSINESS_OWNER_COL, dropna=False)[kpi_cols]
+          .first()
+          .reset_index()
+          .reindex(columns=SHEET2_COLS_WITH_OWNER)
+    )
 
-    # counts
-    "input_rec_count":          [99]*10,
-    "conformed_rec_count":      [99]*10,
-    "input_unique_npi_count":   [95]*10,
-    "conformed_unique_npi_count":[95]*10,
+    # -------- Write workbook to memory --------
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df1.to_excel(writer, sheet_name=SHEET1_NAME, index=False)
+        autosize_and_freeze(writer.sheets[SHEET1_NAME], df1)
 
-    # error codes / descriptions (mostly NA)
-    "critical_error_codes":     [None,None,None,"E001","E001",None,None,None,None,None],
-    "critical_error_description":[None,None,None,"Invalid NPI","Invalid NPI",None,None,None,None,None],
-    "non_critical_error_codes": [None]*10,
-    "non_critical_error_description":[None]*10,
+        df2.to_excel(writer, sheet_name=SHEET2_NAME, index=False)
+        autosize_and_freeze(writer.sheets[SHEET2_NAME], df2)
 
-    # audit stamps
-    "insert_timestamp":         pd.date_range("2025-07-01 11:00", periods=10, freq="H",
-                                 tz="UTC"),
-    "update_timestamp":         pd.date_range("2025-07-01 15:00", periods=10, freq="H",
-                                 tz="UTC"),
-}
+    buf.seek(0)
 
-df_sample = pd.DataFrame(data)
+    # -------- Upload to GCS --------
+    if not gcs_uri.startswith("gs://"):
+        raise ValueError("OUT_URI must start with 'gs://'")
 
-display_dataframe_to_user("Synthetic‑Roster‑Sample", df_sample)
-
-
-import pandas as pd
-
-# `result`  – your existing DataFrame
-# `df_sample` – the DataFrame you want to append
-
-combined = pd.concat([result, df_sample],   # order matters → result first
-                     ignore_index=True,      # re-index 0 … n-1
-                     sort=False)             # keep original column order
-
-# `combined` now has all rows from `result` followed by all rows from df_sample
-print(combined.shape)        # rows, cols
-
+    bucket_name, blob_name = gcs_uri[5:].split("/", 1)
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    bucket.blob(blob_name).upload_from_file(
+        buf,
+        content_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+    )
+    print(f"[INFO] Uploaded Excel with summary+KPI sheets → {gcs_uri}")
