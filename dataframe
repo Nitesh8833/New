@@ -1,68 +1,52 @@
-# ───────────────────────── constants (add / replace) ─────────────────────────
-BUSINESS_OWNER_COL = "Business Team"          # friendly name after header-rename
+import pandas as pd
 
-SHEET2_COLS_WITH_OWNER = [
-    BUSINESS_OWNER_COL,
-    "# New Roster Formats",
-    "# Changed Roster Formats",
-    "# of Rosters with no Set up or Format Change",
-    "# Complex Rosters",
-    "All Rosters",
-]
+def add_conformance_tat(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
 
-# ──────────── REPLACE the whole write_two_sheet_excel_gcs function ───────────
-def write_two_sheet_excel_gcs(df: pd.DataFrame, gcs_uri: str) -> None:
-    """
-    Sheet 1 = detail rows      (SHEET1_COLS)
-    Sheet 2 = one row per team (BUSINESS_OWNER_COL + KPI columns)
-    Upload to GCS.
-    """
-    try:
-        from google.cloud import storage
-    except ImportError:
-        raise ImportError("pip install google-cloud-storage") from None
+    # candidates (add/rename as needed)
+    start_candidates = [
+        "prms_posted_timestamp", "prms_posted_time", "posted timestamp",
+        "file_dropped_time", "file_dropped_timestamp", "prms_posted_ts",
+    ]
+    end_candidates = [
+        "file_returned_timestamp", "processed_timestamp", "update_timestamp",
+        "file_returned_time", "file_ingested_timestamp", "ingestion_timestamp",
+        "file_ingestion_timestamp", "file_ingestion_time",
+    ]
 
-    # -------- Sheet 1  (detail, row-level) --------
-    df1 = df.reindex(columns=[c for c in SHEET1_COLS if c in df.columns])
+    # helper to pick first existing col (case-insensitive)
+    def find_col(d: pd.DataFrame, names):
+        lower = {c.lower(): c for c in d.columns}
+        for n in names:
+            if n.lower() in lower:
+                return lower[n.lower()]
+        return None
 
-    # -------- Sheet 2  (aggregated by Business Team) --------
-    missing_owner = BUSINESS_OWNER_COL not in df.columns
-    if missing_owner:
-        raise ValueError(
-            f"Column '{BUSINESS_OWNER_COL}' not present after friendly-headers step."
-        )
+    start_col = find_col(out, start_candidates)
+    end_col   = find_col(out, end_candidates)
 
-    kpi_cols = [c for c in SHEET2_COLS_WITH_OWNER if c != BUSINESS_OWNER_COL]
-    # group, take first() – values identical per team
-    df2 = (
-        df.groupby(BUSINESS_OWNER_COL, dropna=False)[kpi_cols]
-          .first()
-          .reset_index()
-          .reindex(columns=SHEET2_COLS_WITH_OWNER)
-    )
+    if not start_col or not end_col:
+        out["Conformance TAT"] = None
+        return out
 
-    # -------- Write workbook to memory --------
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        df1.to_excel(writer, sheet_name=SHEET1_NAME, index=False)
-        autosize_and_freeze(writer.sheets[SHEET1_NAME], df1)
+    # normalize datetimes (assume UTC if tz missing)
+    out[start_col] = pd.to_datetime(out[start_col], errors="coerce", utc=True)
+    out[end_col]   = pd.to_datetime(out[end_col],   errors="coerce", utc=True)
 
-        df2.to_excel(writer, sheet_name=SHEET2_NAME, index=False)
-        autosize_and_freeze(writer.sheets[SHEET2_NAME], df2)
+    # compute only where both present and end >= start
+    valid = out[start_col].notna() & out[end_col].notna() & (out[end_col] >= out[start_col])
 
-    buf.seek(0)
+    tat = pd.Series(pd.NaT, index=out.index, dtype="timedelta64[ns]")
+    tat.loc[valid] = (out.loc[valid, end_col] - out.loc[valid, start_col]).dt.round("S")
 
-    # -------- Upload to GCS --------
-    if not gcs_uri.startswith("gs://"):
-        raise ValueError("OUT_URI must start with 'gs://'")
+    # format DD/HH/MM/SS
+    comps = tat.dt.components
+    tat_str = (
+        comps["days"].astype("Int64").astype(str).str.zfill(2) + "/" +
+        comps["hours"].astype("Int64").astype(str).str.zfill(2) + "/" +
+        comps["minutes"].astype("Int64").astype(str).str.zfill(2) + "/" +
+        comps["seconds"].astype("Int64").astype(str).str.zfill(2)
+    ).where(tat.notna(), None)
 
-    bucket_name, blob_name = gcs_uri[5:].split("/", 1)
-    client = storage.Client()
-    bucket = client.bucket(bucket_name)
-    bucket.blob(blob_name).upload_from_file(
-        buf,
-        content_type=(
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        ),
-    )
-    print(f"[INFO] Uploaded Excel with summary+KPI sheets → {gcs_uri}")
+    out["Conformance TAT"] = tat_str
+    return out
