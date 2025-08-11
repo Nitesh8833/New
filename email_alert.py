@@ -1,3 +1,87 @@
+import io
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+import smtplib
+import pandas as pd
+from google.cloud import storage  # keep if you still use GCS elsewhere
+
+def _df_to_excel_bytes(df: pd.DataFrame, sheet_name: str = "Sheet1") -> bytes:
+    bio = io.BytesIO()
+    with pd.ExcelWriter(bio, engine="openpyxl") as w:
+        df.to_excel(w, index=False, sheet_name=sheet_name)
+    bio.seek(0)
+    return bio.read()
+
+def send_email_alert(
+    recipient: str,
+    subject: str,
+    message_body: str,
+    html_content: str | None = None,
+    *,
+    # NEW: attach a DataFrame as an Excel file
+    df_attachment: pd.DataFrame | None = None,
+    sheet_name: str = "Sheet1",
+    attach_filename: str = "report.xlsx",
+    # SMTP settings (works for port 25 or TLS on 587)
+    smtp_server: str = "extmail.aetna.com",
+    smtp_port: int = 25,
+    username: str | None = None,
+    password: str | None = None,
+) -> bool:
+    msg = MIMEMultipart("alternative")
+    msg["From"] = username or "noreply@yourdomain.com"
+    msg["To"] = recipient
+    msg["Subject"] = subject
+
+    msg.attach(MIMEText(message_body, "plain"))
+    if html_content:
+        msg.attach(MIMEText(html_content, "html"))
+
+    # Build attachment from DataFrame (if provided)
+    if df_attachment is not None:
+        file_bytes = _df_to_excel_bytes(df_attachment, sheet_name=sheet_name)
+        part = MIMEApplication(file_bytes,
+                               _subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        part.add_header("Content-Disposition", "attachment", filename=attach_filename)
+        msg.attach(part)
+
+    try:
+        if smtp_port == 587 or username:  # TLS path
+            server = smtplib.SMTP(smtp_server, smtp_port)
+            server.starttls()
+            if username and password:
+                server.login(username, password)
+        else:  # plain port 25
+            server = smtplib.SMTP(smtp_server, smtp_port)
+
+        server.send_message(msg)
+        server.quit()
+        return True
+    except Exception as e:
+        import logging
+        logging.error(f"Failed to send email: {e}")
+        return False
+
+
+
+********************************************
+# say `result` is your DataFrame
+ok = send_email_alert(
+    recipient="you@example.com",
+    subject="Roster report",
+    message_body="Attached is the latest roster report.",
+    html_content="<p>Attached is the latest roster report.</p>",
+    df_attachment=result,                 # ← attach DF as Excel
+    sheet_name="Sheet1",
+    attach_filename="Roster_Report.xlsx",
+    smtp_server="extmail.aetna.com",
+    smtp_port=25,                         # or 587 with TLS + creds below
+    # username="your_user@domain.com",
+    # password="your_password",
+)
+
+************************************************
 # report_first_with_email.py
 
 from __future__ import annotations
