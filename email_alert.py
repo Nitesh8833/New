@@ -1,3 +1,44 @@
+
+
+import pandas as pd
+from datetime import datetime, timezone
+
+def make_excel_safe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Return a copy where any timezone-aware datetimes are made timezone-naive
+    (kept in UTC, tz info removed). Works for both datetime64tz and object cols.
+    """
+    out = df.copy()
+
+    for c in out.columns:
+        s = out[c]
+
+        # 1) Proper datetime64tz dtype
+        if pd.api.types.is_datetime64tz_dtype(s):
+            out[c] = s.dt.tz_convert("UTC").dt.tz_localize(None)
+            continue
+
+        # 2) Object dtype that may contain tz-aware timestamps/datetimes
+        if s.dtype == "object":
+            def _fix(x):
+                # pandas Timestamp
+                if isinstance(x, pd.Timestamp):
+                    if x.tzinfo is not None:
+                        try:
+                            return x.tz_convert("UTC").tz_localize(None)
+                        except Exception:
+                            # if can't tz_convert (already localized), just drop tz
+                            return x.tz_localize(None)
+                    return x
+                # stdlib datetime
+                if isinstance(x, datetime) and x.tzinfo is not None:
+                    return x.astimezone(timezone.utc).replace(tzinfo=None)
+                return x
+            out[c] = s.map(_fix)
+
+    return out
+
+************************
 import io
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
