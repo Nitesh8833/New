@@ -1,5 +1,9 @@
+tz_cols = [c for c in safe.columns
+           if pd.api.types.is_datetime64tz_dtype(safe[c]) 
+           or (safe[c].dtype == "object" and safe[c].map(lambda x: getattr(getattr(x, "tzinfo", None), "utcoffset", None) is not None).any())]
+print("TZ columns still present:", tz_cols)
 
-
+**************
 import pandas as pd
 from datetime import datetime, timezone
 
