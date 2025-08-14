@@ -1,4 +1,4 @@
-# report_pipeline.py
+# daily_report_dag.py
 import os
 import subprocess
 import logging
@@ -18,6 +18,10 @@ from google.cloud import storage
 from google.cloud import secretmanager
 from pandas.api.types import is_datetime64tz_dtype
 from openpyxl.utils import get_column_letter
+
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+
 
 # --- Global Configuration and Mappings ---
 
@@ -75,10 +79,6 @@ def get_db_connection(dbname, user, password, host, port, client_cert_content, c
     )
     return conn
 
-# (The rest of the helper functions from your previous code remain unchanged)
-# normalize, build_renamer, extract_and_rename, parse_gs_uri,
-# _next_available_name, autosize_and_freeze_openpyxl,
-# make_excel_safe, write_df_to_gcs, run_pipeline_from_df
 
 def normalize(s: str) -> str:
     """Lower/trim and remove spaces/. for robust header matching."""
@@ -283,11 +283,14 @@ def run_pipeline_from_df(
     return df_out, written_uri
 
 
-# --- Main Execution Block (Modified) ---
+# --- Main DAG Logic ---
 
-if __name__ == "__main__":
-    # Define your GCP project ID here.
-    PROJECT_ID = "usmedhcb-pdi-intake-devstg"
+def _run_pipeline():
+    """
+    Airflow-callable function that fetches secrets and executes the pipeline.
+    This function acts as the bridge between Airflow and your core logic.
+    """
+    PROJECT_ID = "usmedhcb-pdi-intake-devstg"  # <-- **Ensure this is your correct GCP Project ID**
 
     # --- Fetch credentials from Secret Manager ---
     dbname = get_secret(PROJECT_ID, 'dbname')
@@ -301,12 +304,15 @@ if __name__ == "__main__":
     client_key_content = get_secret(PROJECT_ID, 'client-key-content')
     server_ca_content = get_secret(PROJECT_ID, 'server-ca-content')
     
+    # Get the GCS output path from Secret Manager
+    GS_URI = get_secret(PROJECT_ID, 'report-output-uri')
+    
     # --- Query and Data Loading ---
     query = "SELECT * FROM pdipp.prvrostercnf_conformed_file_stats"
     
     # Establish DB connection and run query
     with get_db_connection(
-        dbname, user, password, host, int(port), # Port needs to be an integer
+        dbname, user, password, host, int(port),
         client_cert_content, client_key_content, server_ca_content
     ) as conn:
         result = pd.read_sql_query(query, con=conn)
@@ -314,8 +320,6 @@ if __name__ == "__main__":
     print(result)
 
     # --- Data Processing and GCS Upload ---
-    GS_URI = get_secret(PROJECT_ID, 'report-output-uri') # Get the output URI from secrets
-    
     df_final, written = run_pipeline_from_df(
         result,
         gs_uri=GS_URI,
@@ -326,3 +330,18 @@ if __name__ == "__main__":
     
     print("\nWritten to GCS URI:")
     print(written)
+
+
+# --- Airflow DAG Definition ---
+with DAG(
+    dag_id="daily_roster_report_pipeline",
+    start_date=datetime(2025, 1, 1),
+    schedule_interval="0 8 * * *",
+    catchup=False,
+    tags=["roster", "etl", "report"],
+) as dag:
+    
+    run_report_pipeline = PythonOperator(
+        task_id="run_roster_report_pipeline",
+        python_callable=_run_pipeline,
+    )
